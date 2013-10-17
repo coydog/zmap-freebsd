@@ -40,6 +40,7 @@
 #include "state.h"
 #include "monitor.h"
 #include "get_gateway.h"
+#include "filter.h"
 
 #include "output_modules/output_modules.h"
 #include "probe_modules/probe_modules.h"
@@ -199,8 +200,6 @@ static void summary(void)
 static void start_zmap(void)
 {
 	log_info("zmap", "started");
-
-	// finish setting up configuration
 	if (zconf.iface == NULL) {
 		char errbuf[PCAP_ERRBUF_SIZE];
 		char *iface = pcap_lookupdev(errbuf);
@@ -242,7 +241,6 @@ static void start_zmap(void)
 				  zconf.gw_mac[0], zconf.gw_mac[1], zconf.gw_mac[2],
 				  zconf.gw_mac[3], zconf.gw_mac[4], zconf.gw_mac[5]);
 	}
-
 	// initialization
 	if (zconf.output_module && zconf.output_module->init) {
 		zconf.output_module->init(&zconf, zconf.output_fields,
@@ -397,9 +395,69 @@ int main(int argc, char *argv[])
 	zconf.log_level = args.verbosity_arg;
 	log_init(stderr, zconf.log_level);
 	log_trace("zmap", "zmap main thread started");
-
+	// parse the provided probe and output module s.t. that we can support
+	// other command-line helpers (e.g. probe help)
+	if (!args.output_module_given) {
+		zconf.output_module = get_output_module_by_name("csv");
+		zconf.raw_output_fields = (char*) "saddr";
+		zconf.filter_duplicates = 1;
+		zconf.filter_unsuccessful = 1;
+	} else if (!strcmp(args.output_module_arg, "simple_file")) {
+		log_warn("zmap", "the simple_file output interface has been deprecated and "
+                                 "will be removed in the future. Users should use the csv "
+				 "output module. Newer scan options such as output-fields "
+				 "are not supported with this output module."); 
+		zconf.output_module = get_output_module_by_name("csv");
+		zconf.raw_output_fields = (char*) "saddr";
+		zconf.filter_duplicates = 1;
+		zconf.filter_unsuccessful = 1;
+	} else if (!strcmp(args.output_module_arg, "extended_file")) {
+		log_warn("zmap", "the extended_file output interface has been deprecated and "
+                                 "will be removed in the future. Users should use the csv "
+				 "output module. Newer scan options such as output-fields "
+				 "are not supported with this output module."); 
+		zconf.output_module = get_output_module_by_name("csv");
+		zconf.raw_output_fields = (char*) "classification, saddr, "
+						  "daddr, sport, dport, "
+						  "seqnum, acknum, cooldown, "
+						  "repeat, timestamp-str";
+		zconf.filter_duplicates = 0;
+	} else if (!strcmp(args.output_module_arg, "redis")) {
+		log_warn("zmap", "the redis output interface has been deprecated and "
+                                 "will be removed in the future. Users should "
+				 "either use redis-packed or redis-json in the "
+				 "future.");
+		zconf.output_module = get_output_module_by_name("redis-packed");
+		zconf.raw_output_fields = (char*) "saddr";
+		zconf.filter_duplicates = 1;
+	} else {
+		zconf.output_module = get_output_module_by_name(args.output_module_arg);
+		if (!zconf.output_module) {
+		  fprintf(stderr, "%s: specified output module (%s) does not exist\n",
+			  CMDLINE_PARSER_PACKAGE, args.output_module_arg);
+		  exit(EXIT_FAILURE);
+		}
+	}
+	zconf.probe_module = get_probe_module_by_name(args.probe_module_arg);
+	if (!zconf.probe_module) {
+		fprintf(stderr, "%s: specified probe module (%s) does not exist\n",
+				CMDLINE_PARSER_PACKAGE, args.probe_module_arg);
+	  exit(EXIT_FAILURE);
+	}
 	if (args.help_given) {
 		cmdline_parser_print_help();
+		printf("\nselected probe-module (%s) help\n", zconf.probe_module->name);
+		if (zconf.probe_module->helptext) {
+			printf("%s\n", zconf.probe_module->helptext);
+		} else {
+			printf("no help text available\n");
+		}
+		printf("\nselected output-module (%s) help\n", zconf.output_module->name);
+		if (zconf.output_module->helptext) {
+			printf("%s\n", zconf.output_module->helptext);
+		} else {
+			printf("no help text available\n");
+		}
 		exit(EXIT_SUCCESS);
 	}
 	if (args.version_given) {
@@ -430,48 +488,7 @@ int main(int argc, char *argv[])
 	if (cmdline_parser_required(&args, CMDLINE_PARSER_PACKAGE) != 0) {
 		exit(EXIT_FAILURE);
 	}
-	// parse the provided probe and output module s.t. that we can support
-	// other command-line helpers (e.g. probe help)
-	if (!args.output_module_given) {
-		zconf.output_module = get_output_module_by_name("csv");
-		zconf.raw_output_fields = (char*) "saddr";
-		zconf.filter_duplicates = 1;
-		zconf.filter_unsuccessful = 1;
-	} else if (!strcmp(args.output_module_arg, "simple_file")) {
-		log_warn("zmap", "the simple_file output interface has been deprecated and "
-                                 "will be removed in the future. Users should use the csv "
-				 "output module. Newer scan options such as output-fields "
-				 "are not supported with this output module."); 
-		zconf.output_module = get_output_module_by_name("csv");
-		zconf.raw_output_fields = (char*) "saddr";
-		zconf.filter_duplicates = 1;
-		zconf.filter_unsuccessful = 1;
-	} else if (!strcmp(args.output_module_arg, "extended_file")) {
-		log_warn("zmap", "the extended_file output interface has been deprecated and "
-                                 "will be removed in the future. Users should use the csv "
-				 "output module. Newer scan options such as output-fields "
-				 "are not supported with this output module."); 
-		zconf.output_module = get_output_module_by_name("csv");
-		zconf.raw_output_fields = (char*) "classification, saddr, "
-						  "daddr, sport, dport, "
-						  "seqnum, acknum, cooldown, "
-						  "repeat, timestamp-str";
-		zconf.filter_duplicates = 0;
-	} else {
-		zconf.output_module = get_output_module_by_name(args.output_module_arg);
-		if (!zconf.output_module) {
-		  fprintf(stderr, "%s: specified output module (%s) does not exist\n",
-			  CMDLINE_PARSER_PACKAGE, args.output_module_arg);
-		  exit(EXIT_FAILURE);
-		}
-	}
-	zconf.probe_module = get_probe_module_by_name(args.probe_module_arg);
-	if (!zconf.probe_module) {
-		fprintf(stderr, "%s: specified probe module (%s) does not exist\n",
-				CMDLINE_PARSER_PACKAGE, args.probe_module_arg);
-	  exit(EXIT_FAILURE);
-	}
-
+	
 	// now that we know the probe module, let's find what it supports
 	memset(&zconf.fsconf, 0, sizeof(struct fieldset_conf));
 	// the set of fields made available to a user is constructed
@@ -523,6 +540,19 @@ int main(int argc, char *argv[])
 			&zconf.fsconf.defs, zconf.output_fields,
 			zconf.output_fields_len);
 
+	// Parse and validate the output filter, if any
+	if (args.output_filter_arg) {
+		// Run it through yyparse to build the expression tree
+		if (!parse_filter_string(args.output_filter_arg)) {
+			log_fatal("zmap", "Unable to parse filter expression");
+		}
+
+		// Check the fields used against the fieldset in use
+		if (!validate_filter(zconf.filter.expression, &zconf.fsconf.defs)) {
+			log_fatal("zmap", "Invalid filter");
+		}
+	}
+
 	SET_BOOL(zconf.dryrun, dryrun);
 	SET_BOOL(zconf.quiet, quiet);
 	SET_BOOL(zconf.summary, summary);
@@ -530,7 +560,6 @@ int main(int argc, char *argv[])
 	zconf.senders = args.sender_threads_arg;
 	SET_IF_GIVEN(zconf.output_filename, output_file);
 	SET_IF_GIVEN(zconf.blacklist_filename, blacklist_file);
-	SET_IF_GIVEN(zconf.whitelist_filename, whitelist_file);
 	SET_IF_GIVEN(zconf.probe_args, probe_args);
 	SET_IF_GIVEN(zconf.output_args, output_args);
 	SET_IF_GIVEN(zconf.iface, interface);
@@ -538,8 +567,21 @@ int main(int argc, char *argv[])
 	SET_IF_GIVEN(zconf.max_results, max_results);
 	SET_IF_GIVEN(zconf.rate, rate);
 	SET_IF_GIVEN(zconf.packet_streams, probes);
-	
 
+	// find if zmap wants any specific cidrs scanned instead
+	// of the entire Internet
+	zconf.destination_cidrs = args.inputs;
+	zconf.destination_cidrs_len = args.inputs_num;
+	if (zconf.destination_cidrs && zconf.blacklist_filename
+			&& !strcmp(zconf.blacklist_filename, "/etc/zmap/blacklist.conf")) {
+		log_warn("blacklist", "ZMap is currently using the default blacklist located "
+				"at /etc/zmap/blacklist.conf. By default, this blacklist excludes locally "
+				"scoped networks (e.g. 10.0.0.0/8, 127.0.0.1/8, and 192.168.0.0/16). If you are"
+				" trying to scan local networks, you can change the default blacklist by "
+				"editing the default ZMap configuration at /etc/zmap/zmap.conf.");
+	}
+	SET_IF_GIVEN(zconf.whitelist_filename, whitelist_file);
+	
 	if (zconf.probe_module->port_args) {
 		if (args.source_port_given) {
 			char *dash = strchr(args.source_port_arg, '-');

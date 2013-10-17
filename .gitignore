@@ -4,3 +4,14 @@
 *~
 \#*
 src/zmap
+CMakeFiles
+*.cmake
+Makefile
+CMakeCache.txt
+src/zopt.h
+src/zopt.c
+lexer.c
+lexer.h
+parser.c
+parser.h
+install_manifest.txt

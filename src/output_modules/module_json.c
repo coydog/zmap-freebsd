@@ -149,13 +149,13 @@ int json_output_file_ip(fieldset_t *fs)
 		field_t *f = &(fs->fields[i]);
 		if (f->type == FS_STRING) {
 			json_object_object_add(obj, f->name,
-					json_object_new_string((char*) f->value));
+					json_object_new_string((char *) f->value.ptr));
 		} else if (f->type == FS_UINT64) {
 			json_object_object_add(obj, f->name,
-					json_object_new_int((int) f->value));
+					json_object_new_int((int) f->value.num));
 		} else if (f->type == FS_BINARY) {
 			json_output_file_store_data(obj,
-					(const u_char*) f->value, f->len); 
+					(const u_char*) f->value.ptr, f->len); 
 		} else if (f->type == FS_NULL) {
 			// do nothing
 		} else {
@@ -188,5 +188,6 @@ output_module_t module_json_file = {
 	.update_interval = 0,
 	.close = &json_output_file_close,
 	.process_ip = &json_output_file_ip,
+	.helptext = NULL
 };
 
