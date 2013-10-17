@@ -8,10 +8,20 @@
 
 #include <stdio.h>
 #include <stdint.h>
-#include <netinet/ip.h>
-#include <netinet/tcp.h>
+
+#ifdef __FREEBSD_INCLUDES__
+/* wbk TODO: Might just conditionally include ip.h if on Linux. Might not
+   need netinet/ip.h once we have out handrolled structs for protocol headers */
+#include <sys/types.h>
+#include "proto_headers.h" // for IFHWADDR only
+
+#else /* wbk TODO  examine CPP logic a bit more... might be cleaner */
 #include <netinet/ether.h>
-#include <net/if.h>
+#include <net/if.h> // for IFHWADDR
+#endif /* __FREEBSD_INCLUDES__ */
+
+//#include <netinet/ip.h> // wbk - doesn't seem to be needed
+//#include <netinet/tcp.h>
 
 #include "types.h"
 #include "fieldset.h"

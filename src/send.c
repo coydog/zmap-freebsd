@@ -19,10 +19,27 @@
 #include <assert.h>
 
 #include <arpa/inet.h>
-#include <sys/socket.h>
-#include <sys/ioctl.h>
+#ifdef __FREEBSD_INCLUDES__
+	#include <pcap/pcap.h> /* TODO:other BSD's*/
+	#include <sys/types.h>
+	#include <sys/socket.h>
+	#include <ifaddrs.h>
+	#include <net/if_dl.h> /* for sockaddr_dl */
+	/* beware, defined in other modulkes */
+	#define PCAP_PROMISC 1
+	#define PCAP_TIMEOUT 1000
+#else /* TODO double check this */
+	#include <sys/socket.h> 
+	#include <sys/ioctl.h>
+#endif
 #include <net/if.h>
+
+/* might want to change to ifdef __LINUX__. Will help more than just FreeBSD */
+#ifdef __FREEBSD_INCLUDES__
+#include "proto_headers.h"
+#else
 #include <linux/if_packet.h>
+#endif /* __FREEBSD__ */
 
 #include "../lib/logger.h"
 #include "../lib/random.h"
@@ -132,6 +149,93 @@ int send_init(void)
 	return EXIT_SUCCESS;
 }
 
+#ifdef ZMAP_PCAP_INJECT
+pcap_t* get_pcap_t(void)
+{
+	pcap_t *pc = NULL;
+	char errbuf[PCAP_ERRBUF_SIZE];
+	/* wbk return a pcap_t ready for pcap_inject */
+	log_debug("send", "getting pcap handle");
+	/* snaplen of 0 since we only write on this pcpa_t? */
+	pc = pcap_open_live(zconf.iface, 0,
+					PCAP_PROMISC, /* needed?*/
+					PCAP_TIMEOUT,
+					errbuf);
+	if (pc == NULL) {
+		log_fatal("send", "couldn't open device %s:, %s. "
+					"Do you have permissions for the device?",
+					zconf.iface, errbuf);
+	}
+	/*struct bpf_program bpf;
+	//if (pcap_compile(pc, &bpf, zconf.probe_module->pcap_filter, 1, 0) < 0) {
+	if (pcap_compile(pc, &bpf, zconf.probe_module->pcap_filter, 1, PCAP_NETMASK_UNKNOWN) < 0) {
+		log_debug("send", "pcap_filter failed. Tried \"%s\"", 
+							zconf.probe_module->pcap_filter);
+		log_fatal("send", "couldn't compile filter");
+	}
+	if (pcap_setfilter(pc, &bpf) < 0) {
+		log_fatal("send", "couldn't install filter");
+	}*/
+	log_debug("send", "injector ready");
+	return pc;
+}
+
+static void get_hwaddr(unsigned char *hwaddr)  /* TODO determine ret type etc  -wbk**/
+	/* error return or rely on log_fatal? TODO*/
+{	
+	/* pass a pointer to ETHER_ADDR_LEN bytes. */
+	/* double check that interface name gets validated since
+	   we use strcmp here. Unless there's some POSIX ocnstant for
+	   max iface name (doubt it) IFNAMESIZ? */
+	struct ifaddrs *p = NULL;
+	struct sockaddr_dl* sdl = NULL; /* BSD-specific hardware address */
+
+	if (getifaddrs(&p) == -1) {
+		log_fatal("send", "get_hwaddr() getifaddrs() failed!");
+		/* TODO: strerror() */
+
+	}
+	for (;p != NULL; p = p->ifa_next) {
+		if ( (p->ifa_addr->sa_family == AF_LINK) /* linux would need AF_PACKET */
+			&& (strncmp(zconf.iface, p->ifa_name, IF_NAMESIZE) == 0) ) 
+		{
+			/* copy MAC. Or get the whole sockaddr :). Eliminate sizeof()? */
+			/* Linux has sockaddr_ll. BSD has sockaddr_dl. structs are differnent  */
+			/* let's just get the hardware address to pass back. */
+			sdl = (struct sockaddr_dl*)(p->ifa_addr);
+			if (sdl->sdl_alen == ETHER_ADDR_LEN) /* paranoia */
+				memcpy(hwaddr, LLADDR((sdl)),  sdl->sdl_alen);
+			else
+				log_fatal("send", "gethwaddr() unexpected sdl_alen!");
+		}
+	}
+}
+
+/*static void get_ipaddr(struct sockaddr *sa)*/
+/* TODO: Is this even needed? */
+static void get_ipaddr(struct in_addr *in)
+{
+	/* retrieve IPaddress using getifaddrs(), used by caller to craft packet for
+	   pcap_inject(). TODO:see how nmap handles this. */
+	struct ifaddrs *p = NULL;	
+	struct sockaddr_in *sin = NULL;
+	if (getifaddrs(&p) == -1) {
+		log_fatal("send", "get_ipaddr() getifaddrs() failed!");
+	}
+	for (; p != NULL; p = p->ifa_next) {
+		if ( (p->ifa_addr->sa_family == AF_INET)
+			&& (strncmp(zconf.iface, p->ifa_name, IF_NAMESIZE) == 0) ) 
+		{
+			/* TODO: grab IPs a struct sockaddr_in I guess */
+			sin = (struct sockaddr_in *)(p->ifa_addr);
+			/* copy the struct in_addr for return*/
+			/* TODO: Idon't like using sizeof() macro; see if there's a better alternative. */
+			/* TODO:sanity check here? */
+			memcpy(in, &(sin->sin_addr), sizeof(struct in_addr));
+		}
+	}
+}
+#else
 int get_socket(void)
 {
 	int sock = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
@@ -141,6 +245,7 @@ int get_socket(void)
 	}
 	return sock;
 }
+#endif
 
 int get_dryrun_socket(void)
 {
@@ -167,11 +272,27 @@ static inline ipaddr_n_t get_src_ip(ipaddr_n_t dst, int local_offset)
 }
 
 // one sender thread
+#ifdef ZMAP_PCAP_INJECT
+int send_run(pcap_t *pc)
+#else
 int send_run(int sock)
+#endif
 {
 	log_debug("send", "thread started");
 	pthread_mutex_lock(&send_mutex);
-	
+#ifdef ZMAP_PCAP_INJECT
+	/* Using pcap, mirror the linux SOCK_RAW behaviour as closely
+	   as possible */
+	unsigned char mac[ETHER_ADDR_LEN];
+	struct in_addr src_ip = {0};
+	//pcap_t *pc = get_pcap_t();
+	/* We don't need the index; we have a pcap handle to the proper
+	   interface */
+	get_hwaddr(mac);
+	get_ipaddr(&src_ip);
+
+#else
+	//int sock = get_socket();
 	struct sockaddr_ll sockaddr;
 	// get source interface index
 	struct ifreq if_idx;
@@ -181,7 +302,7 @@ int send_run(int sock)
 				zconf.iface);
 		return -1;
 	}
-	strncpy(if_idx.ifr_name, zconf.iface, IFNAMSIZ-1);
+	strncpy(if_idx.ifr_name, zconf.iface, IFNAMSIZ-2);
 	if (ioctl(sock, SIOCGIFINDEX, &if_idx) < 0) {
 		perror("SIOCGIFINDEX");
 		return -1;
@@ -206,16 +327,23 @@ int send_run(int sock)
 		perror("SIOCGIFADDR");
 		return -1;
 	}
+	// wbk TODO: gateway MAC.
 	// destination address for the socket
 	memset((void*) &sockaddr, 0, sizeof(struct sockaddr_ll));
 	sockaddr.sll_ifindex = ifindex;
 	sockaddr.sll_halen = ETH_ALEN;
 	memcpy(sockaddr.sll_addr, zconf.gw_mac, ETH_ALEN);
 
+#endif /* not ZMAP_PCAP_INJECT */ /* may move down... TODO wbk */
+
 	char buf[MAX_PACKET_SIZE];
 	memset(buf, 0, MAX_PACKET_SIZE);
 	zconf.probe_module->thread_initialize(buf, 
+#ifdef ZMAP_PCAP_INJECT
+					mac,
+#else
 					(unsigned char *)if_mac.ifr_hwaddr.sa_data, 
+#endif
 					zconf.gw_mac, zconf.target_port);	
 	pthread_mutex_unlock(&send_mutex);
 
@@ -288,6 +416,19 @@ int send_run(int sock)
 				zconf.probe_module->print_packet(stdout, buf);
 			} else {
 					int l = zconf.probe_module->packet_length;
+
+#ifdef ZMAP_PCAP_INJECT
+					int rc = pcap_inject(pc, buf, (size_t)l);
+					if (rc == -1) {
+						struct in_addr addr;
+						addr.s_addr = curr;
+						log_fatal("send", "pcap_inject() failed for %s. %s", /* TODO: make log_debug */
+								  inet_ntoa(addr), strerror(errno));
+						pthread_mutex_lock(&send_mutex);
+						zsend.sendto_failures++;
+						pthread_mutex_unlock(&send_mutex);
+					}
+#else /* TODO: error handling can be shared. */
 					int rc = sendto(sock, buf + zconf.send_ip_pkts*sizeof(struct ethhdr),
 							l, 0,
 							(struct sockaddr *)&sockaddr,
@@ -301,6 +442,7 @@ int send_run(int sock)
 						zsend.sendto_failures++;
 						pthread_mutex_unlock(&send_mutex);
 					}
+#endif
 			}
 		}
 	}

@@ -16,12 +16,17 @@
 #include <pcap/pcap.h>
 
 #include <netinet/tcp.h>
-#include <netinet/ip_icmp.h>
-#include <netinet/udp.h>
-#include <netinet/ip.h>
 #include <netinet/in.h>
+#include <netinet/ip.h>
+#include <netinet/ip_icmp.h> /* wbk BSD requires netinet/in.h and ip.h first */
+#include <netinet/udp.h>
 
-#include <linux/if_ether.h>
+#ifdef __FREEBSD__
+	#include "proto_headers.h"
+	#define ETH_P_IP ETYPE_IPV4
+#else
+	#include <linux/if_ether.h>
+#endif
 #include <arpa/inet.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -76,21 +81,41 @@ void packet_cb(u_char __attribute__((__unused__)) *user,
 	// length of entire packet captured by libpcap
 	uint32_t buflen = (uint32_t) p->caplen;
 
+#ifdef __FREEBSD__
+	if ((sizeof(struct zmap_iphdr) + (zconf.send_ip_pkts ? 0 : sizeof(struct zmap_ethhdr))) > buflen) {
+#else
 	if ((sizeof(struct iphdr) + (zconf.send_ip_pkts ? 0 : sizeof(struct ethhdr))) > buflen) {
+#endif
 		// buffer not large enough to contain ethernet
 		// and ip headers. further action would overrun buf
 		return;
 	}
+#ifdef __FREEBSD__
+	struct zmap_iphdr *ip_hdr = (struct zmap_iphdr *)&bytes[(zconf.send_ip_pkts ? 0 : sizeof(struct zmap_ethhdr))];
+#else
 	struct iphdr *ip_hdr = (struct iphdr *)&bytes[(zconf.send_ip_pkts ? 0 : sizeof(struct ethhdr))];
-
+#endif
+	
+#ifdef __FREEBSD__ /* TODO: this change might work on Linux; is cleaner */
+	uint32_t src_ip = ip_hdr->saddr.s_addr;
+#else
 	uint32_t src_ip = ip_hdr->saddr;
+#endif
 
 	uint32_t validation[VALIDATE_BYTES/sizeof(uint8_t)];
 	// TODO: for TTL exceeded messages, ip_hdr->saddr is going to be different
 	// and we must calculate off potential payload message instead
+#ifdef __FREEBSD__
+	validate_gen(ip_hdr->daddr.s_addr, ip_hdr->saddr.s_addr, (uint8_t *)validation);
+#else
 	validate_gen(ip_hdr->daddr, ip_hdr->saddr, (uint8_t *)validation);
+#endif
 
+#ifdef __FREEBSD__
+	if (!zconf.probe_module->validate_packet(ip_hdr, buflen - (zconf.send_ip_pkts ? 0 : sizeof(struct zmap_ethhdr)),
+#else
 	if (!zconf.probe_module->validate_packet(ip_hdr, buflen - (zconf.send_ip_pkts ? 0 : sizeof(struct ethhdr)),
+#endif
 				&src_ip, validation)) {
 		return;
 	}
@@ -108,7 +133,11 @@ void packet_cb(u_char __attribute__((__unused__)) *user,
 		if (buflen > sizeof(fake_eth_hdr)) {
 			buflen = sizeof(fake_eth_hdr);
 		}
-		memcpy(&fake_eth_hdr[sizeof(struct ethhdr)], bytes, buflen);
+#ifdef __FREEBSD__
+		memcpy(&fake_eth_hdr[sizeof(struct zmap_ethhdr)], bytes, buflen); /* wbk TODO: replace these sizeof(struct *hdr) with macros) */
+#else
+		memcpy(&fake_eth_hdr[sizeof(struct ethhdr)], bytes, buflen); /* wbk TODO: replace these sizeof(struct *hdr) with macros) */
+#endif
 		bytes = fake_eth_hdr;
 	}
 	zconf.probe_module->process_packet(bytes, buflen, fs);
@@ -198,7 +227,11 @@ int recv_run(pthread_mutex_t *recv_ready_mutex)
 		}
 	}
 	if (zconf.send_ip_pkts) {
+#ifdef __FREEBSD__
+		struct zmap_ethhdr *eth = (struct zmap_ethhdr *)fake_eth_hdr;
+#else
 		struct ethhdr *eth = (struct ethhdr *)fake_eth_hdr;
+#endif
 		memset(fake_eth_hdr, 0, sizeof(fake_eth_hdr));
 		eth->h_proto = htons(ETH_P_IP);
 	}

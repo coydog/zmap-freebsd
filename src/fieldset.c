@@ -35,6 +35,8 @@ fieldset_t *fs_new_fieldset(void)
 	return f;	
 }
 
+/* wbk TODO: Might have some subtle issues here on 32 bit architectures. Getting
+   compiler warnings about casting void* to uint64_t	*/
 static inline void fs_add_word(fieldset_t *fs, const char *name, int type,
 		int free_, size_t len, void *value)
 {

@@ -27,6 +27,10 @@
 
 #include <pthread.h>
 
+#ifdef __FREEBSD_INCLUDES__
+#include <pthread_np.h> /* per man PTHREAD_AFFINITY_NP(3) */
+#endif
+
 #include "../lib/logger.h"
 #include "../lib/random.h"
 
@@ -79,11 +83,15 @@ static void set_cpu(void)
 	pthread_mutex_lock(&cpu_affinity_mutex);
 	static int core=0;
 	int num_cores = sysconf(_SC_NPROCESSORS_ONLN);
+#ifdef __FREEBSD_PTHREADS__
+	cpuset_t cpuset;
+#else
 	cpu_set_t cpuset;	
+#endif
 	CPU_ZERO(&cpuset);
 	CPU_SET(core, &cpuset);
 	if (pthread_setaffinity_np(pthread_self(),
-				sizeof(cpu_set_t), &cpuset) != 0) {
+				sizeof(cpuset), &cpuset) != 0) {
 		log_error("zmap", "can't set thread CPU affinity");
 	}
 	log_trace("zmap", "set thread %u affinity to core %d",
@@ -94,10 +102,21 @@ static void set_cpu(void)
 
 static void* start_send(void *arg)
 {
-	uintptr_t v = (uintptr_t) arg;
+	/* TODO: This is really ugly. */
+	/* keep in mind this is all pointing at the caller's stack copy of this
+	   struct. If we let zmap_start return before threads die, or if we modify
+	   the members within the worker threads, this will need to be changed. 
+	   Should be ok, if ugly, as long as access is read-only and calling function
+	   doesn't return early, leaving this pointer pointing out of the stack */
+	struct send_handle *handle = (struct send_handle *) arg;
+	uintptr_t v = handle->sock;
 	int sock = (int) v & 0xFFFF;
 	set_cpu();
-	send_run(sock);
+#ifdef ZMAP_PCAP_INJECT
+	send_run(handle->pc);
+#else
+	send_run(handle->sock);
+#endif
 	return NULL;
 }
 
@@ -253,14 +272,20 @@ static void start_zmap(void)
 	assert(tsend);
 	log_debug("zmap", "using %d sender threads", zconf.senders);
 	for (int i=0; i < zconf.senders; i++) {
-	uintptr_t sock;
+	//uintptr_t sock;
+	struct send_handle handle = {0,NULL};	
 		if (zconf.dryrun) {
-			sock = get_dryrun_socket();
+			handle.sock = get_dryrun_socket();
 		} else {
-			sock = get_socket();
+#ifdef ZMAP_PCAP_INJECT
+			handle.pc = get_pcap_t();
+#else
+			handle.sock = get_socket();
+#endif
 		}
 		
-		int r = pthread_create(&tsend[i], NULL, start_send, (void*) sock);
+		//int r = pthread_create(&tsend[i], NULL, start_send, (void*) sock);
+		int r = pthread_create(&tsend[i], NULL, start_send, (void*) &handle);
 		if (r != 0) {
 			log_fatal("zmap", "unable to create send thread");
 			exit(EXIT_FAILURE);

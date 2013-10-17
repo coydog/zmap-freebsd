@@ -16,12 +16,17 @@
 #include <assert.h>
 
 #include <netinet/udp.h>
+#include <netinet/in.h> /* wbk order */
 #include <netinet/ip.h>
-#include <netinet/ether.h>
-#include <netinet/ip_icmp.h>
+#ifdef __FREEBSD__
+	#include "proto_headers.h" /* wbk TODO: test */
+#else
+	#include <netinet/ether.h>
+	#include <netinet/ether.h> /* wbk TODO: Probably need proto_headers.h instead */
+	#include <netinet/ip_icmp.h>
+#endif
 
 #include <sys/socket.h>
-#include <netinet/in.h>
 #include <arpa/inet.h>
 
 #include "probe_modules.h"
@@ -159,20 +164,36 @@ int udp_init_perthread(void* buf, macaddr_t *src,
 		macaddr_t *gw, __attribute__((unused)) port_h_t dst_port)
 {
 	memset(buf, 0, MAX_PACKET_SIZE);
+#ifdef __FREEBSD__
+	struct zmap_ethhdr *eth_header = (struct zmap_ethhdr *)buf;
+	make_eth_header(eth_header, src, gw);
+	struct zmap_iphdr *ip_header = (struct zmap_iphdr*)(&eth_header[1]);
+	uint16_t len = htons(sizeof(struct zmap_iphdr) + sizeof(struct zmap_udphdr) + udp_send_msg_len);
+#else
 	struct ethhdr *eth_header = (struct ethhdr *)buf;
 	make_eth_header(eth_header, src, gw);
 	struct iphdr *ip_header = (struct iphdr*)(&eth_header[1]);
 	uint16_t len = htons(sizeof(struct iphdr) + sizeof(struct udphdr) + udp_send_msg_len);
+#endif
 	make_ip_header(ip_header, IPPROTO_UDP, len);
 
+#ifdef __FREEBSD__
+	struct zmap_udphdr *udp_header = (struct zmap_udphdr*)(&ip_header[1]);
+#else
 	struct udphdr *udp_header = (struct udphdr*)(&ip_header[1]);
+#endif
 	len = sizeof(struct udphdr) + udp_send_msg_len;
 	make_udp_header(udp_header, zconf.target_port, len);
 
 	char* payload = (char*)(&udp_header[1]);
 
+#ifdef __FREEBSD__
+	module_udp.packet_length = sizeof(struct zmap_ethhdr) + sizeof(struct zmap_iphdr) 
+				+ sizeof(struct zmap_udphdr) + udp_send_msg_len;
+#else
 	module_udp.packet_length = sizeof(struct ethhdr) + sizeof(struct iphdr) 
 				+ sizeof(struct udphdr) + udp_send_msg_len;
+#endif
 	assert(module_udp.packet_length <= MAX_PACKET_SIZE);
 
 	memcpy(payload, udp_send_msg, udp_send_msg_len);
@@ -183,12 +204,24 @@ int udp_init_perthread(void* buf, macaddr_t *src,
 int udp_make_packet(void *buf, ipaddr_n_t src_ip, ipaddr_n_t dst_ip, 
 		uint32_t *validation, int probe_num)
 {
+#ifdef __FREEBSD__
+	struct zmap_ethhdr *eth_header = (struct zmap_ethhdr *)buf;
+	struct zmap_iphdr *ip_header = (struct zmap_iphdr*)(&eth_header[1]);
+	struct zmap_udphdr *udp_header = (struct zmap_udphdr*)(&ip_header[1]);
+#else
 	struct ethhdr *eth_header = (struct ethhdr *)buf;
 	struct iphdr *ip_header = (struct iphdr*)(&eth_header[1]);
 	struct udphdr *udp_header = (struct udphdr*)(&ip_header[1]);
+#endif
 
+#ifdef __FREEBSD__
+	ip_header->saddr.s_addr = src_ip;
+	ip_header->daddr.s_addr = dst_ip;
+#else
 	ip_header->saddr = src_ip;
 	ip_header->daddr = dst_ip;
+#endif
+
 	udp_header->source = get_src_port(num_ports, probe_num,
 					validation);
 	ip_header->check = 0;
@@ -199,9 +232,15 @@ int udp_make_packet(void *buf, ipaddr_n_t src_ip, ipaddr_n_t dst_ip,
 
 void udp_print_packet(FILE *fp, void* packet)
 {
+#ifdef __FREEBSD__
+	struct zmap_ethhdr *ethh = (struct zmap_ethhdr *) packet;
+	struct zmap_iphdr *iph = (struct zmap_iphdr *) &ethh[1];
+	struct zmap_udphdr *udph  = (struct zmap_udphdr*)(&iph[1]);
+#else
 	struct ethhdr *ethh = (struct ethhdr *) packet;
 	struct iphdr *iph = (struct iphdr *) &ethh[1];
 	struct udphdr *udph  = (struct udphdr*)(&iph[1]);
+#endif
 	fprintf(fp, "udp { source: %u | dest: %u | checksum: %u }\n",
 			ntohs(udph->source),
 			ntohs(udph->dest),
@@ -213,9 +252,16 @@ void udp_print_packet(FILE *fp, void* packet)
 
 void udp_process_packet(const u_char *packet, UNUSED uint32_t len, fieldset_t *fs)
 {
-	struct iphdr *ip_hdr = (struct iphdr *)&packet[sizeof(struct ethhdr)];
+#ifdef __FREEBSD__
+	struct zmap_iphdr *ip_hdr = (struct zmap_iphdr *)&packet[sizeof(struct zmap_ethhdr)];
+#else
+#endif
 	if (ip_hdr->protocol == IPPROTO_UDP) {
+#ifdef __FREEBSD__
+		struct zmap_udphdr *udp = (struct zmap_udphdr *)((char *)ip_hdr + ip_hdr->ihl * 4);
+#else
 		struct udphdr *udp = (struct udphdr *)((char *)ip_hdr + ip_hdr->ihl * 4);
+#endif
 		fs_add_string(fs, "classification", (char*) "udp", 0);
 		fs_add_uint64(fs, "success", 1);
 		fs_add_uint64(fs, "sport", ntohs(udp->source));
@@ -226,16 +272,21 @@ void udp_process_packet(const u_char *packet, UNUSED uint32_t len, fieldset_t *f
 		fs_add_null(fs, "icmp_unreach_str");
 		fs_add_binary(fs, "data", (ntohs(udp->len) - sizeof(struct udphdr)), (void*) &udp[1], 0);
 	} else if (ip_hdr->protocol == IPPROTO_ICMP) {
+#ifdef __FREEBSD__
+		struct zmap_icmphdr *icmp = (struct zmap_icmphdr *)((char *)ip_hdr + ip_hdr->ihl * 4);
+		struct zmap_iphdr *ip_inner = (struct zmap_iphdr*)&icmp[1];
+#else
 		struct icmphdr *icmp = (struct icmphdr *)((char *)ip_hdr + ip_hdr->ihl * 4);
 		struct iphdr *ip_inner = (struct iphdr*)&icmp[1];
+#endif
 		// ICMP unreach comes from another server (not the one we sent a probe to);
 		// But we will fix up saddr to be who we sent the probe to, in case you care.
-		fs_modify_string(fs, "saddr", make_ip_str(ip_inner->daddr), 1);
+		fs_modify_string(fs, "saddr", make_ip_str(ip_inner->daddr.s_addr), 1);
 		fs_add_string(fs, "classification", (char*) "icmp-unreach", 0);
 		fs_add_uint64(fs, "success", 0);
 		fs_add_null(fs, "sport");
 		fs_add_null(fs, "dport");
-		fs_add_string(fs, "icmp_responder", make_ip_str(ip_hdr->saddr), 1);
+		fs_add_string(fs, "icmp_responder", make_ip_str(ip_hdr->saddr.s_addr), 1);
 		fs_add_uint64(fs, "icmp_type", icmp->type);
 		fs_add_uint64(fs, "icmp_code", icmp->code);
 		if (icmp->code <= ICMP_PREC_CUTOFF) {
@@ -257,41 +308,71 @@ void udp_process_packet(const u_char *packet, UNUSED uint32_t len, fieldset_t *f
 	}
 }
 
+#ifdef __FREEBSD__
+int udp_validate_packet(const struct zmap_iphdr *ip_hdr, uint32_t len, 
+#else
 int udp_validate_packet(const struct iphdr *ip_hdr, uint32_t len, 
+#endif
 		__attribute__((unused))uint32_t *src_ip, uint32_t *validation)
 {
 	uint16_t dport, sport;
 	if (ip_hdr->protocol == IPPROTO_UDP) {
+#ifdef __FREEBSD__
+		if ((4*ip_hdr->ihl + sizeof(struct zmap_udphdr)) > len) {
+#else
 		if ((4*ip_hdr->ihl + sizeof(struct udphdr)) > len) {
+#endif
 			// buffer not large enough to contain expected udp header 
 			return 0;
 		}
+#ifdef __FREEBSD__
+		struct zmap_udphdr *udp = (struct zmap_udphdr*)((char *)ip_hdr + 4*ip_hdr->ihl);
+#else
 		struct udphdr *udp = (struct udphdr*)((char *)ip_hdr + 4*ip_hdr->ihl);
+#endif
 
 		sport = ntohs(udp->dest);
 		dport = ntohs(udp->source);
 	} else if (ip_hdr->protocol == IPPROTO_ICMP) {
 		// UDP can return ICMP Destination unreach
 		// IP( ICMP( IP( UDP ) ) ) for a destination unreach
+#ifdef __FREEBSD__
+		uint32_t min_len = 4*ip_hdr->ihl + sizeof(struct zmap_icmphdr)
+				+ sizeof(struct zmap_iphdr) + sizeof(struct zmap_udphdr);
+#else
 		uint32_t min_len = 4*ip_hdr->ihl + sizeof(struct icmphdr)
 				+ sizeof(struct iphdr) + sizeof(struct udphdr);
+#endif
 		if (len < min_len) {
 			// Not enough information for us to validate
 			return 0;
 		}
 
+#ifdef __FREEBSD__
+		struct zmap_icmphdr *icmp = (struct zmap_icmphdr*)((char *)ip_hdr + 4*ip_hdr->ihl);
+#else
 		struct icmphdr *icmp = (struct icmphdr*)((char *)ip_hdr + 4*ip_hdr->ihl);
+#endif
 		if (icmp->type != ICMP_DEST_UNREACH) {
 			return 0;
 		}
-
+#ifdef __FREEBSD__
+		struct zmap_iphdr *ip_inner = (struct zmap_iphdr*)&icmp[1];
+		// Now we know the actual inner ip length, we should recheck the buffer
+		if (len < 4*ip_inner->ihl - sizeof(struct zmap_iphdr) + min_len) {
+#else
 		struct iphdr *ip_inner = (struct iphdr*)&icmp[1];
 		// Now we know the actual inner ip length, we should recheck the buffer
 		if (len < 4*ip_inner->ihl - sizeof(struct iphdr) + min_len) {
+#endif
 			return 0;
 		}
 		// This is the packet we sent
+#ifdef __FREEBSD__
+		struct zmap_udphdr *udp = (struct zmap_udphdr *)((char*)ip_inner + 4*ip_inner->ihl);
+#else
 		struct udphdr *udp = (struct udphdr *)((char*)ip_inner + 4*ip_inner->ihl);
+#endif
 
 		sport = ntohs(udp->source);
 		dport = ntohs(udp->dest);

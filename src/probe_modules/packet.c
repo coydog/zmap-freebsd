@@ -12,7 +12,9 @@
 #include <stdio.h>
 #include <string.h>
 
+#ifndef __FREEBSD__
 #include <netinet/ether.h>
+#endif
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
 #include <netinet/udp.h>
@@ -24,6 +26,16 @@
 
 #include "state.h"
 
+#ifdef __FREEBSD__
+#include "../proto_headers.h"
+#endif
+
+#ifdef __FREEBSD_INCLUDES__ /* some macros in Linux system headers */
+#define ETH_ALEN ETHER_ADDR_LEN
+#define ETH_P_IP ETYPE_IPV4 /* EtherType 0x800 */
+#endif
+
+#ifndef __FREEBSD__ /* TODO: */
 void print_macaddr(struct ifreq* i)
 {
 	printf("Device %s -> Ethernet %02x:%02x:%02x:%02x:%02x:%02x\n",
@@ -35,8 +47,13 @@ void print_macaddr(struct ifreq* i)
 			(int) ((unsigned char *) &i->ifr_hwaddr.sa_data)[4],
 			(int) ((unsigned char *) &i->ifr_hwaddr.sa_data)[5]);
 }
+#endif
 
+#ifdef __FREEBSD__
+void fprintf_ip_header(FILE *fp, struct zmap_iphdr *iph)
+#else
 void fprintf_ip_header(FILE *fp, struct iphdr *iph)
+#endif
 {
 	struct in_addr *s = (struct in_addr *) &(iph->saddr);
 	struct in_addr *d = (struct in_addr *) &(iph->daddr);
@@ -53,7 +70,11 @@ void fprintf_ip_header(FILE *fp, struct iphdr *iph)
 			ntohl(iph->check));
 }
 
+#ifdef __FREEBSD__
+void fprintf_eth_header(FILE *fp, struct zmap_ethhdr *ethh)
+#else
 void fprintf_eth_header(FILE *fp, struct ethhdr *ethh)
+#endif
 {
 	fprintf(fp, "eth { shost: %02x:%02x:%02x:%02x:%02x:%02x | "
 			"dhost: %02x:%02x:%02x:%02x:%02x:%02x }\n",
@@ -71,14 +92,22 @@ void fprintf_eth_header(FILE *fp, struct ethhdr *ethh)
 			(int) ((unsigned char *) ethh->h_dest)[5]);
 }
 
+#ifdef __FREEBSD__
+void make_eth_header(struct zmap_ethhdr *ethh, macaddr_t *src, macaddr_t *dst)
+#else
 void make_eth_header(struct ethhdr *ethh, macaddr_t *src, macaddr_t *dst)
+#endif
 {
 	memcpy(ethh->h_source, src, ETH_ALEN);
 	memcpy(ethh->h_dest, dst, ETH_ALEN);
 	ethh->h_proto = htons(ETH_P_IP);
 }
 
+#ifdef __FREEBSD__
+void make_ip_header(struct zmap_iphdr *iph, uint8_t protocol, uint16_t len)
+#else
 void make_ip_header(struct iphdr *iph, uint8_t protocol, uint16_t len)
+#endif
 {	   
 	iph->ihl = 5; // Internet Header Length
 	iph->version = 4; // IPv4
@@ -99,7 +128,23 @@ void make_icmp_header(struct icmp *buf)
 	buf->icmp_code = 0;
 	buf->icmp_seq = 0;
 }
+/* TODO: This is sketchy when linking against other translation units.
+   Probably need to reconcile the struct names properly */
 
+
+#ifdef __FREEBSD__
+void make_tcp_header(struct zmap_tcphdr *tcp_header, port_h_t dest_port)
+{
+	tcp_header->seq = random();
+	tcp_header->ack_seq = 0;
+	tcp_header->th_flags = 0;
+	tcp_header->th_flags = 5 << 4; /* data offset */
+	tcp_header->th_flags &= TH_SYN;
+	tcp_header->th_win = htons(65535);
+	tcp_header->check = 0;
+	tcp_header->th_urp = 0;
+	tcp_header->dest = (htons(dest_port));
+#else
 void make_tcp_header(struct tcphdr *tcp_header, port_h_t dest_port)
 {
     tcp_header->seq = random();
@@ -111,9 +156,14 @@ void make_tcp_header(struct tcphdr *tcp_header, port_h_t dest_port)
     tcp_header->check = 0;
     tcp_header->urg_ptr = 0;
     tcp_header->dest = htons(dest_port);
+#endif
 }
 
+#ifdef __FREEBSD__
+void make_udp_header(struct zmap_udphdr *udp_header, port_h_t dest_port,
+#else
 void make_udp_header(struct udphdr *udp_header, port_h_t dest_port,
+#endif
 				uint16_t len)
 {
 	udp_header->dest = htons(dest_port);

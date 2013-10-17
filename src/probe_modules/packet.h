@@ -1,6 +1,11 @@
 #include "state.h"
 
-#include <netinet/ether.h>
+#ifdef __FREEBSD__
+	#include "proto_headers.h"
+#else
+	#include <netinet/ether.h>
+#endif /* __FREEBSD__ */
+
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
 #include <netinet/ip_icmp.h>
@@ -11,17 +16,32 @@
 
 #define MAX_PACKET_SIZE 4096
 
+/* wbk - proceed w/ caution here w/ all the sizeof's */
+
 typedef unsigned short __attribute__((__may_alias__)) alias_unsigned_short;
 
-void make_eth_header(struct ethhdr *ethh, macaddr_t *src, macaddr_t *dst);
 
+#ifdef __FREEBSD__
+void make_eth_header(struct zmap_ethhdr *ethh, macaddr_t *src, macaddr_t *dst);
+void make_ip_header(struct zmap_iphdr *iph, uint8_t, uint16_t);
+void make_tcp_header(struct zmap_tcphdr*, port_h_t);
+#else
+void make_eth_header(struct ethhdr *ethh, macaddr_t *src, macaddr_t *dst);
 void make_ip_header(struct iphdr *iph, uint8_t, uint16_t);
 void make_tcp_header(struct tcphdr*, port_h_t);
+#endif
 void make_icmp_header(struct icmp *);
+#ifdef __FREEBSD__
+void make_udp_header(struct zmap_udphdr *udp_header, port_h_t dest_port,
+				uint16_t len);
+void fprintf_ip_header(FILE *fp, struct zmap_iphdr *iph);
+void fprintf_eth_header(FILE *fp, struct zmap_ethhdr *ethh);
+#else
 void make_udp_header(struct udphdr *udp_header, port_h_t dest_port,
 				uint16_t len);
 void fprintf_ip_header(FILE *fp, struct iphdr *iph);
 void fprintf_eth_header(FILE *fp, struct ethhdr *ethh);
+#endif
 
 static inline unsigned short in_checksum(unsigned short *ip_pkt, int len)
 {
@@ -37,7 +57,11 @@ static inline unsigned short in_checksum(unsigned short *ip_pkt, int len)
 __attribute__((unused)) static inline unsigned short ip_checksum(
                 unsigned short *buf)
 {
+#ifdef __FREEBSD__
+	return in_checksum(buf, (int) sizeof(struct zmap_iphdr));
+#else
 	return in_checksum(buf, (int) sizeof(struct iphdr));
+#endif
 }
 
 __attribute__((unused)) static inline unsigned short icmp_checksum(
@@ -47,7 +71,11 @@ __attribute__((unused)) static inline unsigned short icmp_checksum(
 }
 
 static __attribute__((unused)) uint16_t tcp_checksum(unsigned short len_tcp,
+#ifdef __FREEBSD__
+		uint32_t saddr, uint32_t daddr, struct zmap_tcphdr *tcp_pkt)
+#else
 		uint32_t saddr, uint32_t daddr, struct tcphdr *tcp_pkt)
+#endif
 {
 	alias_unsigned_short *src_addr = (alias_unsigned_short *) &saddr;
 	alias_unsigned_short *dest_addr = (alias_unsigned_short *) &daddr;

@@ -15,16 +15,22 @@
 
 #include <netinet/in.h>
 #include <net/if.h>
-#include <sys/socket.h>
-#include <sys/ioctl.h>
-#include <linux/netlink.h>
-#include <linux/rtnetlink.h>
+#ifdef __FREEBSD__
+	#include <ifaddrs.h>
+#else
+	#include <sys/socket.h>
+	#include <sys/ioctl.h>
+	#include <linux/netlink.h>
+	#include <linux/rtnetlink.h>
+#endif
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 
 #include "../lib/logger.h"
 
+#ifdef __FREEBSD__
+#else
 int read_nl_sock(int sock, char *buf, int buf_len)
 {
 	int msg_len = 0;
@@ -87,7 +93,14 @@ int send_nl_req(uint16_t msg_type, uint32_t seq,
 	free(nlmsg);
 	return sock;
 }
+#endif
 
+#ifdef __FREEBSD__
+int get_hw_addr(struct in_addr *gw_ip, char *iface, unsigned char *hw_mac) {
+	log_fatal("get-gw", "get_hw_addr() not yet implemented for BSD");
+	return -1;
+}
+#else
 int get_hw_addr(struct in_addr *gw_ip, char *iface, unsigned char *hw_mac)
 {
 	char buf[8192];
@@ -164,8 +177,19 @@ int get_hw_addr(struct in_addr *gw_ip, char *iface, unsigned char *hw_mac)
 	}
 	return -1;				
 }
+#endif
 
 // gw and iface[IF_NAMESIZE] MUST be allocated
+/* wbk TODO: Need a better understanding of what the Linux rt stuff
+   is doing. May be portable to BSD using different constants */
+#ifdef __FREEBSD__
+/* TODO */
+int get_default_gw(struct in_addr *gw, char *iface) 
+{ 
+	log_fatal("get-gw", "get_default_gw() not yet implemented for BSD; use -G [router MAC] instead"); 
+	return -1;
+}
+#else
 int get_default_gw(struct in_addr *gw, char *iface)
 {
 	struct rtmsg req;
@@ -223,8 +247,29 @@ int get_default_gw(struct in_addr *gw, char *iface)
 	}
 	return -1;
 }
+#endif
 
 // Returns the first IP address for a given iface
+#ifdef __FREEBSD__
+int get_iface_ip(char *iface, struct in_addr *ip)
+{
+	/* retrieve IP address using getifaddrs(). Should port across BSD's. */
+	struct ifaddrs *p = NULL;
+	struct sockaddr_in *sin = NULL;
+	if (getifaddrs(&p) == -1) {
+		log_fatal("get_getway", "get_if_ip() getifaddrs() failed!");
+	}
+	for (; p != NULL; p = p->ifa_next) {
+		if ( (p->ifa_addr->sa_family == AF_INET)
+				&& (strncmp(iface, p->ifa_name, IF_NAMESIZE) == 0) )
+		{
+			sin = (struct sockaddr_in *)(p->ifa_addr);
+			memcpy(ip, &(sin->sin_addr), sizeof(*ip));
+			return 0;
+		}
+	}
+}
+#else
 int get_iface_ip(char *iface, struct in_addr *ip)
 {
 	int sock;
@@ -246,4 +291,4 @@ int get_iface_ip(char *iface, struct in_addr *ip)
 	memcpy(ip, &((struct sockaddr_in*)&ifr.ifr_addr)->sin_addr, sizeof(*ip));
 	return 0;
 }
-
+#endif

@@ -4,6 +4,8 @@
 #ifndef PROBE_MODULES_H
 #define PROBE_MODULES_H
 
+#include "../proto_headers.h"
+
 typedef struct probe_response_type {
 		const uint8_t is_success;
 		const char *name;
@@ -18,11 +20,15 @@ typedef int (*probe_make_packet_cb)(void* packetbuf, ipaddr_n_t src_ip,
 		uint32_t *validation, int probe_num);
 
 typedef void (*probe_print_packet_cb)(FILE *, void* packetbuf);
-typedef int (*probe_close_cb)(struct state_conf*, 
+typedef int (*probe_close_cb)(struct state_conf*,
 		struct state_send*, struct state_recv*);
+#ifdef __FREEBSD__
+typedef int (*probe_validate_packet_cb)(const struct zmap_iphdr *ip_hdr,
+		uint32_t len, uint32_t *src_ip, uint32_t *validation);
+#else
 typedef int (*probe_validate_packet_cb)(const struct iphdr *ip_hdr,
 		uint32_t len, uint32_t *src_ip, uint32_t *validation);
-
+#endif
 typedef void (*probe_classify_packet_cb)(const u_char* packetbuf,
 		uint32_t len, fieldset_t*);
 
@@ -51,7 +57,11 @@ typedef struct probe_module {
 
 probe_module_t* get_probe_module_by_name(const char*);
 
+#ifdef __FREEBSD__
+void fs_add_ip_fields(fieldset_t *fs, struct zmap_iphdr *ip);
+#else
 void fs_add_ip_fields(fieldset_t *fs, struct iphdr *ip);
+#endif
 void fs_add_system_fields(fieldset_t *fs, int is_repeat, int in_cooldown);
 void print_probe_modules(void);
 

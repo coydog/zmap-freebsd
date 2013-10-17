@@ -16,7 +16,11 @@
 #include <sys/socket.h>
 #include <sys/ioctl.h>
 #include <net/if.h>
-#include <linux/if_packet.h>
+#ifdef __FREEBSD__
+	#include "../proto_headers.h"
+#else
+	#include <linux/if_packet.h>
+#endif
 
 #include "../../lib/logger.h"
 #include "../fieldset.h"
@@ -54,10 +58,14 @@ void print_probe_modules(void)
 	}
 }
 
+#ifdef __FREEBSD__
+void fs_add_ip_fields(fieldset_t *fs, struct zmap_iphdr *ip)
+#else
 void fs_add_ip_fields(fieldset_t *fs, struct iphdr *ip)
+#endif	
 {
-	fs_add_string(fs, "saddr", make_ip_str(ip->saddr), 1);
-	fs_add_string(fs, "daddr", make_ip_str(ip->daddr), 1);
+	fs_add_string(fs, "saddr", make_ip_str(ip->saddr.s_addr), 1);
+	fs_add_string(fs, "daddr", make_ip_str(ip->daddr.s_addr), 1);
 	fs_add_uint64(fs, "ipid", ntohs(ip->id));
 	fs_add_uint64(fs, "ttl", ip->ttl);
 }

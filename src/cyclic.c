@@ -48,7 +48,11 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 
+#ifdef __FREEBSD_INCLUDES__
+#include </usr/local/include/gmp.h>
+#else
 #include <gmp.h>
+#endif
 
 #include "../lib/logger.h"
 #include "../lib/blacklist.h"
