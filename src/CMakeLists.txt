@@ -75,8 +75,11 @@ add_custom_command(OUTPUT zopt.h
 	COMMAND gengetopt -C --no-help --no-version --unamed-opts=SUBNETS -i "${CMAKE_CURRENT_SOURCE_DIR}/zopt.ggo" -F "${CMAKE_CURRENT_BINARY_DIR}/zopt"
 	)
 
+# wbk TODO: replace this absolute path to flex 2.5.37 with proper CMake
+# configuration. This will break Linux build otherwise.
+find_package(FLEX 2.5.37 REQUIRED)
 add_custom_command(OUTPUT lexer.c
-	COMMAND flex -o "${CMAKE_CURRENT_BINARY_DIR}/lexer.c" --header-file="${CMAKE_CURRENT_BINARY_DIR}/lexer.h" lexer.l
+	COMMAND ${FLEX_EXECUTABLE} -o"${CMAKE_CURRENT_BINARY_DIR}/lexer.c" --header-file="${CMAKE_CURRENT_BINARY_DIR}/lexer.h" lexer.l
 	)
 
 add_custom_command(OUTPUT parser.c
@@ -87,9 +90,10 @@ add_executable(zmap ${SOURCES})
 
 target_link_libraries(
 	zmap 
-	pcap gmp m
+	pcap m
 	${REDIS_LIBS}
 	${JSON_LIBRARIES}
+	${GMP_LIBRARIES}
 	)
 
 # Install binary
